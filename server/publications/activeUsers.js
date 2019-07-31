@@ -1,5 +1,6 @@
 import { Meteor } from 'meteor/meteor';
-import { Users } from 'meteor/rocketchat:models';
+
+import { Users } from '../../app/models';
 
 Meteor.publish('activeUsers', function() {
 	if (!this.userId) {
@@ -12,6 +13,7 @@ Meteor.publish('activeUsers', function() {
 			name: 1,
 			status: 1,
 			utcOffset: 1,
+			statusText: 1,
 		},
 	});
 });
