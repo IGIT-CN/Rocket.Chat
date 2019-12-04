@@ -8,11 +8,16 @@ import { AppRealStorage, AppRealLogsStorage } from './storage';
 import { settings } from '../../settings';
 import { Permissions, AppsLogsModel, AppsModel, AppsPersistenceModel } from '../../models';
 import { Logger } from '../../logger';
-
-export let Apps;
+import { AppVisitorsConverter } from './converters/visitors';
+import { AppUploadsConverter } from './converters/uploads';
+import { AppDepartmentsConverter } from './converters/departments';
 
 class AppServerOrchestrator {
 	constructor() {
+		this._isInitialized = false;
+	}
+
+	initialize() {
 		this._rocketchatLogger = new Logger('Rocket.Chat Apps');
 		Permissions.createOrUpdate('manage-apps', ['admin']);
 
@@ -29,6 +34,9 @@ class AppServerOrchestrator {
 		this._converters.set('rooms', new AppRoomsConverter(this));
 		this._converters.set('settings', new AppSettingsConverter(this));
 		this._converters.set('users', new AppUsersConverter(this));
+		this._converters.set('visitors', new AppVisitorsConverter(this));
+		this._converters.set('departments', new AppDepartmentsConverter(this));
+		this._converters.set('uploads', new AppUploadsConverter(this));
 
 		this._bridges = new RealAppBridges(this);
 
@@ -38,6 +46,8 @@ class AppServerOrchestrator {
 		this._communicators.set('methods', new AppMethods(this));
 		this._communicators.set('notifier', new AppServerNotifier(this));
 		this._communicators.set('restapi', new AppsRestApi(this, this._manager));
+
+		this._isInitialized = true;
 	}
 
 	getModel() {
@@ -72,6 +82,10 @@ class AppServerOrchestrator {
 		return this._manager;
 	}
 
+	isInitialized() {
+		return this._isInitialized;
+	}
+
 	isEnabled() {
 		return settings.get('Apps_Framework_enabled');
 	}
@@ -99,11 +113,11 @@ class AppServerOrchestrator {
 		return this._marketplaceUrl;
 	}
 
-	load() {
+	async load() {
 		// Don't try to load it again if it has
 		// already been loaded
 		if (this.isLoaded()) {
-			return Promise.resolve();
+			return;
 		}
 
 		return this._manager.load()
@@ -111,11 +125,11 @@ class AppServerOrchestrator {
 			.catch((err) => console.warn('Failed to load the Apps Framework and Apps!', err));
 	}
 
-	unload() {
+	async unload() {
 		// Don't try to unload it if it's already been
 		// unlaoded or wasn't unloaded to start with
 		if (!this.isLoaded()) {
-			return Promise.resolve();
+			return;
 		}
 
 		return this._manager.unload()
@@ -123,15 +137,17 @@ class AppServerOrchestrator {
 			.catch((err) => console.warn('Failed to unload the Apps Framework!', err));
 	}
 
-	updateAppsMarketplaceInfo(apps = []) {
+	async updateAppsMarketplaceInfo(apps = []) {
 		if (!this.isLoaded()) {
-			return Promise.resolve();
+			return;
 		}
 
 		return this._manager.updateAppsMarketplaceInfo(apps)
 			.then(() => this._manager.get());
 	}
 }
+
+export const Apps = new AppServerOrchestrator();
 
 settings.addGroup('General', function() {
 	this.section('Apps', function() {
@@ -154,7 +170,7 @@ settings.addGroup('General', function() {
 
 settings.get('Apps_Framework_enabled', (key, isEnabled) => {
 	// In case this gets called before `Meteor.startup`
-	if (!Apps) {
+	if (!Apps.isInitialized()) {
 		return;
 	}
 
@@ -166,7 +182,7 @@ settings.get('Apps_Framework_enabled', (key, isEnabled) => {
 });
 
 Meteor.startup(function _appServerOrchestrator() {
-	Apps = new AppServerOrchestrator();
+	Apps.initialize();
 
 	if (Apps.isEnabled()) {
 		Apps.load();

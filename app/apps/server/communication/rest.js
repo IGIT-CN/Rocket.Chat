@@ -9,8 +9,9 @@ import { Info } from '../../../utils';
 import { Settings, Users } from '../../../models/server';
 import { Apps } from '../orchestrator';
 
+const appsEngineVersionForMarketplace = Info.marketplaceApiVersion.replace(/-.*/g, '');
 const getDefaultHeaders = () => ({
-	'X-Apps-Engine-Version': Info.marketplaceApiVersion,
+	'X-Apps-Engine-Version': appsEngineVersionForMarketplace,
 });
 
 const purchaseTypes = new Set(['buy', 'subscription']);
@@ -73,7 +74,7 @@ export class AppsRestApi {
 
 					let result;
 					try {
-						result = HTTP.get(`${ baseUrl }/v1/apps?version=${ Info.marketplaceApiVersion }`, {
+						result = HTTP.get(`${ baseUrl }/v1/apps`, {
 							headers,
 						});
 					} catch (e) {
@@ -227,7 +228,7 @@ export class AppsRestApi {
 					return API.v1.failure({ error: 'Failed to get a file to install for the App. ' });
 				}
 
-				const aff = Promise.await(manager.add(buff.toString('base64'), false, marketplaceInfo));
+				const aff = Promise.await(manager.add(buff.toString('base64'), true, marketplaceInfo));
 				const info = aff.getAppInfo();
 
 				if (aff.hasStorageError()) {
@@ -236,10 +237,6 @@ export class AppsRestApi {
 
 				if (aff.getCompilerErrors().length) {
 					return API.v1.failure({ status: 'compiler_error', messages: aff.getCompilerErrors() });
-				}
-
-				if (aff.getLicenseValidationResult().hasErrors) {
-					return API.v1.failure({ status: 'license_error', messages: aff.getLicenseValidationResult().getErrors() });
 				}
 
 				info.status = aff.getApp().getStatus();
@@ -292,6 +289,20 @@ export class AppsRestApi {
 			},
 		});
 
+		const handleError = (message, e) => {
+			orchestrator.getRocketChatLogger().error(message, e.response.data);
+
+			if (e.response.statusCode >= 500 && e.response.statusCode <= 599) {
+				return API.v1.internalError();
+			}
+
+			if (e.response.statusCode === 404) {
+				return API.v1.notFound();
+			}
+
+			return API.v1.failure();
+		};
+
 		this.api.addRoute(':id', { authRequired: true, permissionsRequired: ['manage-apps'] }, {
 			get() {
 				if (this.queryParams.marketplace && this.queryParams.version) {
@@ -309,8 +320,7 @@ export class AppsRestApi {
 							headers,
 						});
 					} catch (e) {
-						orchestrator.getRocketChatLogger().error('Error getting the App information from the Marketplace:', e.response.data);
-						return API.v1.internalError();
+						return handleError('Error getting the App information from the Marketplace:', e);
 					}
 
 					if (!result || result.statusCode !== 200 || result.data.length === 0) {
@@ -332,12 +342,11 @@ export class AppsRestApi {
 
 					let result;
 					try {
-						result = HTTP.get(`${ baseUrl }/v1/apps/${ this.urlParams.id }/latest?frameworkVersion=${ Info.marketplaceApiVersion }`, {
+						result = HTTP.get(`${ baseUrl }/v1/apps/${ this.urlParams.id }/latest?frameworkVersion=${ appsEngineVersionForMarketplace }`, {
 							headers,
 						});
 					} catch (e) {
-						orchestrator.getRocketChatLogger().error('Error getting the App update info from the Marketplace:', e.response.data);
-						return API.v1.internalError();
+						return handleError('Error getting the App update info from the Marketplace:', e);
 					}
 
 					if (result.statusCode !== 200 || result.data.length === 0) {
