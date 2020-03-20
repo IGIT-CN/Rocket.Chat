@@ -1,4 +1,4 @@
-import moment from 'moment';
+import s from 'underscore.string';
 
 import { BaseRaw } from './BaseRaw';
 
@@ -97,171 +97,121 @@ export class UsersRaw extends BaseRaw {
 		]).toArray();
 	}
 
-	findAllAverageServiceTime({ start, end, options = {} }) {
-		const roomsFilter = [
-			{ $gte: ['$$room.ts', new Date(start)] },
-			{ $lte: ['$$room.ts', new Date(end)] },
-		];
-		const match = { $match: { roles: { $in: ['livechat-agent'] } } };
-		const lookup = {
-			$lookup: {
-				from: 'rocketchat_room',
-				localField: '_id',
-				foreignField: 'servedBy._id',
-				as: 'rooms',
+	findActiveByUsernameOrNameRegexWithExceptionsAndConditions(searchTerm, exceptions, conditions, options) {
+		if (exceptions == null) { exceptions = []; }
+		if (conditions == null) { conditions = {}; }
+		if (options == null) { options = {}; }
+		if (!Array.isArray(exceptions)) {
+			exceptions = [exceptions];
+		}
+
+		const termRegex = new RegExp(s.escapeRegExp(searchTerm), 'i');
+		const query = {
+			$or: [{
+				username: termRegex,
+			}, {
+				name: termRegex,
+			}],
+			active: true,
+			type: {
+				$in: ['user', 'bot'],
+			},
+			$and: [{
+				username: {
+					$exists: true,
+				},
+			}, {
+				username: {
+					$nin: exceptions,
+				},
+			}],
+			...conditions,
+		};
+
+		return this.find(query, options);
+	}
+
+	countAllAgentsStatus({ departmentId = undefined }) {
+		const match = {
+			$match: {
+				roles: { $in: ['livechat-agent'] },
 			},
 		};
-		const projects = [
-			{
-				$project: {
-					user: '$$ROOT',
-					rooms: {
-						$filter: {
-							input: '$rooms',
-							as: 'room',
-							cond: {
-								$and: roomsFilter,
+		const group = {
+			$group: {
+				_id: null,
+				offline: {
+					$sum: {
+						$cond: [{
+							$or: [{
+								$and: [
+									{ $eq: ['$status', 'offline'] },
+									{ $eq: ['$statusLivechat', 'available'] },
+								],
 							},
-						},
-					},
-				},
-			},
-			{
-				$project: {
-					user: '$user',
-					chats: { $size: '$rooms' },
-					chatsDuration: { $sum: '$rooms.metrics.chatDuration' },
-				},
-			},
-			{
-				$project: {
-					username: '$user.username',
-					name: '$user.name',
-					active: '$user.active',
-					averageServiceTimeInSeconds: {
-						$ceil: {
-							$cond: [
-								{ $eq: ['$chats', 0] },
-								0,
-								{ $divide: ['$chatsDuration', '$chats'] },
+							{ $eq: ['$statusLivechat', 'not-available'] },
 							],
-						},
+						}, 1, 0],
 					},
 				},
-			}];
-		const params = [match, lookup, ...projects];
-		if (options.offset) {
-			params.push({ $skip: options.offset });
-		}
-		if (options.count) {
-			params.push({ $limit: options.count });
-		}
-		if (options.sort) {
-			params.push({ $sort: { username: 1 } });
-		}
-		return this.col.aggregate(params).toArray();
-	}
-
-	findAllServiceTime({ start, end, options = {} }) {
-		const roomsFilter = [
-			{ $gte: ['$$room.ts', new Date(start)] },
-			{ $lte: ['$$room.ts', new Date(end)] },
-		];
-		const match = { $match: { roles: { $in: ['livechat-agent'] } } };
-		const lookup = {
-			$lookup: {
-				from: 'rocketchat_room',
-				localField: '_id',
-				foreignField: 'servedBy._id',
-				as: 'rooms',
+				away: {
+					$sum: {
+						$cond: [{
+							$and: [
+								{ $eq: ['$status', 'away'] },
+								{ $eq: ['$statusLivechat', 'available'] },
+							],
+						}, 1, 0],
+					},
+				},
+				busy: {
+					$sum: {
+						$cond: [{
+							$and: [
+								{ $eq: ['$status', 'busy'] },
+								{ $eq: ['$statusLivechat', 'available'] },
+							],
+						}, 1, 0],
+					},
+				},
+				available: {
+					$sum: {
+						$cond: [{
+							$and: [
+								{ $eq: ['$status', 'online'] },
+								{ $eq: ['$statusLivechat', 'available'] },
+							],
+						}, 1, 0],
+					},
+				},
 			},
 		};
-		const projects = [
-			{
-				$project: {
-					user: '$$ROOT',
-					rooms: {
-						$filter: {
-							input: '$rooms',
-							as: 'room',
-							cond: {
-								$and: roomsFilter,
-							},
-						},
-					},
-				},
-			},
-			{
-				$project: {
-					username: '$user.username',
-					name: '$user.name',
-					active: '$user.active',
-					chats: { $size: '$rooms' },
-					chatsDuration: { $ceil: { $sum: '$rooms.metrics.chatDuration' } },
-				},
-			}];
-		const params = [match, lookup, ...projects];
-		if (options.offset) {
-			params.push({ $skip: options.offset });
-		}
-		if (options.count) {
-			params.push({ $limit: options.count });
-		}
-		if (options.sort) {
-			params.push({ $sort: { username: 1 } });
-		}
-		return this.col.aggregate(params).toArray();
-	}
-
-	findAvailableServiceTimeHistory({ start, end, fullReport, options = {} }) {
-		const sessionFilter = [
-			{ $gte: ['$$session.date', parseInt(moment(start).format('YYYYMMDD'))] },
-			{ $lte: ['$$session.date', parseInt(moment(end).format('YYYYMMDD'))] },
-		];
-		const match = { $match: { roles: { $in: ['livechat-agent'] } } };
 		const lookup = {
 			$lookup: {
-				from: 'rocketchat_livechat_agent_activity',
+				from: 'rocketchat_livechat_department_agents',
 				localField: '_id',
 				foreignField: 'agentId',
-				as: 'sessions',
+				as: 'departments',
 			},
 		};
-		const sessionProject = {
-			$project: {
-				user: '$$ROOT',
-				sessions: {
-					$filter: {
-						input: '$sessions',
-						as: 'session',
-						cond: {
-							$and: sessionFilter,
-						},
-					},
-				},
+		const unwind = {
+			$unwind: {
+				path: '$departments',
+				preserveNullAndEmptyArrays: true,
 			},
 		};
-		const presentationProject = {
-			$project: {
-				username: '$user.username',
-				name: '$user.name',
-				active: '$user.active',
-				availableTimeInSeconds: { $sum: '$sessions.availableTime' },
+		const departmentsMatch = {
+			$match: {
+				'departments.departmentId': departmentId,
 			},
 		};
-		if (fullReport) {
-			presentationProject.$project['sessions.serviceHistory'] = 1;
+		const params = [match];
+		if (departmentId) {
+			params.push(lookup);
+			params.push(unwind);
+			params.push(departmentsMatch);
 		}
-		const params = [match, lookup, sessionProject, presentationProject];
-		if (options.offset) {
-			params.push({ $skip: options.offset });
-		}
-		if (options.count) {
-			params.push({ $limit: options.count });
-		}
-		if (options.sort) {
-			params.push({ $sort: { username: 1 } });
-		}
+		params.push(group);
 		return this.col.aggregate(params).toArray();
 	}
 }
