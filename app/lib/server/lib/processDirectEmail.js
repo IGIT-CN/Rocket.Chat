@@ -2,10 +2,11 @@ import { Meteor } from 'meteor/meteor';
 import { EmailReplyParser as reply } from 'emailreplyparser';
 import moment from 'moment';
 
-import { settings } from '../../../settings';
-import { Rooms, Messages, Users, Subscriptions } from '../../../models';
-import { metrics } from '../../../metrics';
-import { hasPermission } from '../../../authorization';
+import { settings } from '../../../settings/server';
+import { Rooms, Messages, Users, Subscriptions } from '../../../models/server';
+import { metrics } from '../../../metrics/server';
+import { hasPermission } from '../../../authorization/server';
+import { SystemLogger } from '../../../../server/lib/logger/system';
 import { sendMessage as _sendMessage } from '../functions';
 
 export const processDirectEmail = function(email) {
@@ -87,7 +88,7 @@ export const processDirectEmail = function(email) {
 			return false;
 		}
 
-		if ((room.muted || []).includes(user.username)) {
+		if (room?.muted?.includes(user.username)) {
 			// user is muted
 			return false;
 		}
@@ -100,10 +101,6 @@ export const processDirectEmail = function(email) {
 					return false;
 				}
 			}
-		}
-
-		if (message.alias == null && settings.get('Message_SetNameToAliasEnabled')) {
-			message.alias = user.name;
 		}
 
 		metrics.messagesSent.inc(); // TODO This line needs to be moved to it's proper place. See the comments on: https://github.com/RocketChat/Rocket.Chat/pull/5736
@@ -130,6 +127,6 @@ export const processDirectEmail = function(email) {
 		email.headers.mid = email.headers.to.split('@')[0].split('+')[1];
 		sendMessage(email);
 	} else {
-		console.log('Invalid Email....If not. Please report it.');
+		SystemLogger.error('Invalid Email....If not. Please report it.');
 	}
 };

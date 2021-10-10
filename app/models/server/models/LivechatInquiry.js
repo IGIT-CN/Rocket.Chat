@@ -10,6 +10,7 @@ export class LivechatInquiry extends Base {
 		this.tryEnsureIndex({ ts: 1 }); // timestamp
 		this.tryEnsureIndex({ department: 1 });
 		this.tryEnsureIndex({ status: 1 }); // 'ready', 'queued', 'taken'
+		this.tryEnsureIndex({ queueOrder: 1, estimatedWaitingTimeQueue: 1, estimatedServiceTimeAt: 1 });
 	}
 
 	findOneById(inquiryId) {
@@ -28,10 +29,16 @@ export class LivechatInquiry extends Base {
 			},
 			{
 				sort: {
-					ts: 1,
+					queueOrder: 1,
+					estimatedWaitingTimeQueue: 1,
+					estimatedServiceTimeAt: 1,
 				},
 			},
 		);
+	}
+
+	getQueuedInquiries(options) {
+		return this.find({ status: 'queued' }, options);
 	}
 
 	/*
@@ -42,6 +49,7 @@ export class LivechatInquiry extends Base {
 			_id: inquiryId,
 		}, {
 			$set: { status: 'taken' },
+			$unset: { defaultAgent: 1, estimatedInactivityCloseTimeAt: 1 },
 		});
 	}
 
@@ -63,7 +71,22 @@ export class LivechatInquiry extends Base {
 		return this.update({
 			_id: inquiryId,
 		}, {
-			$set: { status: 'queued' },
+			$set: {
+				status: 'queued',
+			},
+		});
+	}
+
+	/*
+	* mark inquiry as ready
+	*/
+	readyInquiry(inquiryId) {
+		return this.update({
+			_id: inquiryId,
+		}, {
+			$set: {
+				status: 'ready',
+			},
 		});
 	}
 
@@ -100,6 +123,16 @@ export class LivechatInquiry extends Base {
 		};
 
 		return this.update(query, update);
+	}
+
+	setDefaultAgentById(inquiryId, defaultAgent) {
+		return this.update({
+			_id: inquiryId,
+		}, {
+			$set: {
+				defaultAgent,
+			},
+		});
 	}
 
 	setNameByRoomId(rid, name) {
@@ -177,6 +210,14 @@ export class LivechatInquiry extends Base {
 		return collectionObj.aggregate(aggregate).toArray();
 	}
 
+	removeDefaultAgentById(inquiryId) {
+		return this.update({
+			_id: inquiryId,
+		}, {
+			$unset: { defaultAgent: 1 },
+		});
+	}
+
 	/*
 	* remove the inquiry by roomId
 	*/
@@ -191,6 +232,48 @@ export class LivechatInquiry extends Base {
 
 		this.remove(query);
 	}
+
+	getUnnatendedQueueItems(date) {
+		const query = {
+			status: 'queued',
+			estimatedInactivityCloseTimeAt: { $lte: new Date(date) },
+		};
+		return this.find(query);
+	}
+
+	setEstimatedInactivityCloseTime(_id, date) {
+		return this.update({ _id }, {
+			$set: {
+				estimatedInactivityCloseTimeAt: new Date(date),
+			},
+		});
+	}
+
+	unsetEstimatedInactivityCloseTime() {
+		return this.update({ status: 'queued' }, {
+			$unset: {
+				estimatedInactivityCloseTimeAt: 1,
+			},
+		}, { multi: true });
+	}
+
+	// This is a better solution, but update pipelines are not supported until version 4.2 of mongo
+	// leaving this here for when the time comes
+	/* updateEstimatedInactivityCloseTime(milisecondsToAdd) {
+		return this.model.rawCollection().updateMany(
+			{ status: 'queued' },
+			[{
+				// in case this field doesn't exists, set at the last time the item was modified (updatedAt)
+				$set: { estimatedInactivityCloseTimeAt: '$_updatedAt' },
+			}, {
+				$set: {
+					estimatedInactivityCloseTimeAt: {
+						$add: ['$estimatedInactivityCloseTimeAt', milisecondsToAdd],
+					},
+				},
+			}],
+		);
+	} */
 }
 
 export default new LivechatInquiry();

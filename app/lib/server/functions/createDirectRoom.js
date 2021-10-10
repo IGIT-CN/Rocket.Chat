@@ -1,83 +1,124 @@
-import { Rooms, Subscriptions } from '../../../models/server';
-import { getDefaultSubscriptionPref } from '../../../utils/server';
+import { AppsEngineException } from '@rocket.chat/apps-engine/definition/exceptions';
+import { Meteor } from 'meteor/meteor';
+
+import { Apps } from '../../../apps/server';
 import { callbacks } from '../../../callbacks/server';
+import { Rooms, Subscriptions } from '../../../models/server';
+import { settings } from '../../../settings/server';
+import { getDefaultSubscriptionPref } from '../../../utils/server';
 
-export const createDirectRoom = function(source, target, extraData, options) {
-	const rid = [source._id, target._id].sort().join('');
+const generateSubscription = (fname, name, user, extra) => ({
+	alert: false,
+	unread: 0,
+	userMentions: 0,
+	groupMentions: 0,
+	...user.customFields && { customFields: user.customFields },
+	...getDefaultSubscriptionPref(user),
+	...extra,
+	t: 'd',
+	fname,
+	name,
+	u: {
+		_id: user._id,
+		username: user.username,
+	},
+});
 
-	const now = new Date();
+const getFname = (members) => members.map(({ name, username }) => name || username).join(', ');
+const getName = (members) => members.map(({ username }) => username).join(', ');
 
-	const roomUpsertResult = Rooms.upsert({ _id: rid }, {
-		$set: {
-			usernames: [source.username, target.username],
-		},
-		$setOnInsert: Object.assign({
-			t: 'd',
-			msgs: 0,
-			ts: now,
-			usersCount: 2,
-		}, extraData),
-	});
+export const createDirectRoom = function(members, roomExtraData = {}, options = {}) {
+	if (members.length > (settings.get('DirectMesssage_maxUsers') || 1)) {
+		throw new Error('error-direct-message-max-user-exceeded');
+	}
 
-	const targetNotificationPref = getDefaultSubscriptionPref(target);
+	const sortedMembers = members.sort((u1, u2) => (u1.name || u1.username).localeCompare(u2.name || u2.username));
 
-	Subscriptions.upsert({ rid, 'u._id': target._id }, {
-		$setOnInsert: Object.assign({
-			fname: source.name,
-			name: source.username,
-			t: 'd',
-			open: false,
-			alert: false,
-			unread: 0,
-			userMentions: 0,
-			groupMentions: 0,
-			customFields: target.customFields,
-			u: {
-				_id: target._id,
-				username: target.username,
-			},
-			ts: now,
-			...targetNotificationPref,
-		}, options.subscriptionExtra),
-	});
+	const usernames = sortedMembers.map(({ username }) => username);
+	const uids = members.map(({ _id }) => _id).sort();
 
-	const sourceNotificationPref = getDefaultSubscriptionPref(source);
+	// Deprecated: using users' _id to compose the room _id is deprecated
+	const room = uids.length === 2
+		? Rooms.findOneById(uids.join(''), { fields: { _id: 1 } })
+		: Rooms.findOneDirectRoomContainingAllUserIDs(uids, { fields: { _id: 1 } });
 
-	Subscriptions.upsert({ rid, 'u._id': source._id }, {
-		$set: {
-			ls: now,
-			open: true,
-			...target.active === false && {
-				archived: true,
-			},
-		},
-		$setOnInsert: Object.assign({
-			fname: target.name,
-			name: target.username,
-			t: 'd',
-			alert: false,
-			unread: 0,
-			userMentions: 0,
-			groupMentions: 0,
-			customFields: source.customFields,
-			u: {
-				_id: source._id,
-				username: source.username,
-			},
-			ts: now,
-			...sourceNotificationPref,
-		}, options.subscriptionExtra),
-	});
+	const isNewRoom = !room;
+
+	const roomInfo = {
+		...uids.length === 2 && { _id: uids.join('') }, // Deprecated: using users' _id to compose the room _id is deprecated
+		t: 'd',
+		usernames,
+		usersCount: members.length,
+		msgs: 0,
+		ts: new Date(),
+		uids,
+		...roomExtraData,
+	};
+
+	if (isNewRoom) {
+		roomInfo._USERNAMES = usernames;
+
+		const prevent = Promise.await(Apps.triggerEvent('IPreRoomCreatePrevent', roomInfo).catch((error) => {
+			if (error instanceof AppsEngineException) {
+				throw new Meteor.Error('error-app-prevented', error.message);
+			}
+
+			throw error;
+		}));
+		if (prevent) {
+			throw new Meteor.Error('error-app-prevented', 'A Rocket.Chat App prevented the room creation.');
+		}
+
+		let result;
+		result = Promise.await(Apps.triggerEvent('IPreRoomCreateExtend', roomInfo));
+		result = Promise.await(Apps.triggerEvent('IPreRoomCreateModify', result));
+
+		if (typeof result === 'object') {
+			Object.assign(roomInfo, result);
+		}
+
+		delete roomInfo._USERNAMES;
+	}
+
+	const rid = room?._id || Rooms.insert(roomInfo);
+
+	if (members.length === 1) { // dm to yourself
+		Subscriptions.upsert({ rid, 'u._id': members[0]._id }, {
+			$set: { open: true },
+			$setOnInsert: generateSubscription(members[0].name || members[0].username, members[0].username, members[0], { ...options.subscriptionExtra }),
+		});
+	} else {
+		members.forEach((member) => {
+			const otherMembers = sortedMembers.filter(({ _id }) => _id !== member._id);
+
+			Subscriptions.upsert({ rid, 'u._id': member._id }, {
+				...options.creator === member._id && { $set: { open: true } },
+				$setOnInsert: generateSubscription(
+					getFname(otherMembers),
+					getName(otherMembers),
+					member,
+					{
+						...options.subscriptionExtra,
+						...options.creator !== member._id && { open: members.length > 2 },
+					},
+				),
+			});
+		});
+	}
 
 	// If the room is new, run a callback
-	if (roomUpsertResult.insertedId) {
+	if (isNewRoom) {
 		const insertedRoom = Rooms.findOneById(rid);
 
-		callbacks.run('afterCreateDirectRoom', insertedRoom, { from: source, to: target });
+		callbacks.run('afterCreateDirectRoom', insertedRoom, { members });
+
+		Apps.triggerEvent('IPostRoomCreate', insertedRoom);
 	}
 
 	return {
 		_id: rid,
+		usernames,
 		t: 'd',
+		inserted: isNewRoom,
 	};
 };

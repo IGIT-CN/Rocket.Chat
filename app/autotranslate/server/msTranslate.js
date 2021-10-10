@@ -7,7 +7,7 @@ import { HTTP } from 'meteor/http';
 import _ from 'underscore';
 
 import { TranslationProviderRegistry, AutoTranslate } from './autotranslate';
-import { logger } from './logger';
+import { msLogger } from './logger';
 import { settings } from '../../settings';
 
 /**
@@ -70,17 +70,18 @@ class MsAutoTranslate extends AutoTranslate {
 	 * @returns {object} code : value pair
 	 */
 	getSupportedLanguages(target) {
-		if (this.autoTranslateEnabled && this.apiKey) {
-			if (this.supportedLanguages[target]) {
-				return this.supportedLanguages[target];
-			}
-			const languages = HTTP.get(this.apiGetLanguages);
-			this.supportedLanguages[target] = Object.keys(languages.data.translation).map((language) => ({
-				language,
-				name: languages.data.translation[language].name,
-			}));
-			return this.supportedLanguages[target || 'en'];
+		if (!this.apiKey) {
+			return;
 		}
+		if (this.supportedLanguages[target]) {
+			return this.supportedLanguages[target];
+		}
+		const languages = HTTP.get(this.apiGetLanguages);
+		this.supportedLanguages[target] = Object.keys(languages.data.translation).map((language) => ({
+			language,
+			name: languages.data.translation[language].name,
+		}));
+		return this.supportedLanguages[target || 'en'];
 	}
 
 	/**
@@ -136,7 +137,7 @@ class MsAutoTranslate extends AutoTranslate {
 		try {
 			return this._translate(msgs, targetLanguages);
 		} catch (e) {
-			logger.microsoft.error('Error translating message', e);
+			msLogger.error({ err: e, msg: 'Error translating message' });
 		}
 		return {};
 	}
@@ -154,7 +155,7 @@ class MsAutoTranslate extends AutoTranslate {
 				Text: attachment.description || attachment.text,
 			}], targetLanguages);
 		} catch (e) {
-			logger.microsoft.error('Error translating message attachment', e);
+			msLogger.error({ err: e, msg: 'Error translating message attachment' });
 		}
 		return {};
 	}

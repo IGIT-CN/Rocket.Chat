@@ -66,8 +66,6 @@
 						</label>
 					</div>
 
-					{{> customFieldsForm hideFromForm=true}}
-
 					<div class="rc-input">
 						<label class="rc-input__label" for="pass">
 							<div class="rc-input__wrapper">
@@ -109,7 +107,7 @@
 							<div class="rc-input__wrapper">
 								<input name="email" id="email" type="text" class="rc-input__element"
 									autocapitalize="off" autocorrect="off"
-									placeholder="{{_ "Email"}}" autofocus>
+									placeholder="{{_ "Email"}}" autofocus value="{{#if state 'email-verification'}}{{typedEmail}}{{/if}}">
 								<div class="input-error"></div>
 							</div>
 						</label>

@@ -1,9 +1,9 @@
 import { Meteor } from 'meteor/meteor';
 import { WebApp } from 'meteor/webapp';
-import _ from 'underscore';
 
-import { RocketChatFile } from '../../../file';
-import { settings } from '../../../settings';
+import { RocketChatFile } from '../../../file/server';
+import { settings } from '../../../settings/server';
+import { SystemLogger } from '../../../../server/lib/logger/system';
 
 export let RocketChatFileCustomSoundsInstance;
 
@@ -20,7 +20,7 @@ Meteor.startup(function() {
 		throw new Error(`Invalid RocketChatStore type [${ storeType }]`);
 	}
 
-	console.log(`Using ${ storeType } for custom sounds storage`.green);
+	SystemLogger.info(`Using ${ storeType } for custom sounds storage`);
 
 	let path = '~/uploads';
 	if (settings.get('CustomSounds_FileSystemPath') != null) {
@@ -35,16 +35,16 @@ Meteor.startup(function() {
 	});
 
 	return WebApp.connectHandlers.use('/custom-sounds/', Meteor.bindEnvironment(function(req, res/* , next*/) {
-		const params =			{ sound: decodeURIComponent(req.url.replace(/^\//, '').replace(/\?.*$/, '')) };
+		const fileId = decodeURIComponent(req.url.replace(/^\//, '').replace(/\?.*$/, ''));
 
-		if (_.isEmpty(params.sound)) {
+		if (!fileId) {
 			res.writeHead(403);
 			res.write('Forbidden');
 			res.end();
 			return;
 		}
 
-		const file = RocketChatFileCustomSoundsInstance.getFileWithReadStream(params.sound);
+		const file = RocketChatFileCustomSoundsInstance.getFileWithReadStream(fileId);
 		if (!file) {
 			return;
 		}
@@ -73,7 +73,7 @@ Meteor.startup(function() {
 		} else {
 			res.setHeader('Last-Modified', new Date().toUTCString());
 		}
-		res.setHeader('Content-Type', 'audio/mpeg');
+		res.setHeader('Content-Type', file.contentType);
 		res.setHeader('Content-Length', file.length);
 
 		file.readStream.pipe(res);

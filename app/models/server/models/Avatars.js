@@ -12,7 +12,8 @@ export class Avatars extends Base {
 			doc.instanceId = InstanceStatus.id();
 		});
 
-		this.tryEnsureIndex({ name: 1 });
+		this.tryEnsureIndex({ name: 1 }, { sparse: true });
+		this.tryEnsureIndex({ rid: 1 }, { sparse: true });
 	}
 
 	insertAvatarFileInit(name, userId, store, file, extra) {
@@ -63,6 +64,10 @@ export class Avatars extends Base {
 		return this.findOne({ name });
 	}
 
+	findOneByRoomId(rid) {
+		return this.findOne({ rid });
+	}
+
 	updateFileNameById(fileId, name) {
 		const filter = { _id: fileId };
 		const update = {
@@ -70,32 +75,6 @@ export class Avatars extends Base {
 				name,
 			},
 		};
-		if (this.model.direct && this.model.direct.update) {
-			return this.model.direct.update(filter, update);
-		}
-		return this.update(filter, update);
-	}
-
-	// @TODO deprecated
-	updateFileCompleteByNameAndUserId(name, userId, url) {
-		if (!name) {
-			return;
-		}
-
-		const filter = {
-			name,
-			userId,
-		};
-
-		const update = {
-			$set: {
-				complete: true,
-				uploading: false,
-				progress: 1,
-				url,
-			},
-		};
-
 		if (this.model.direct && this.model.direct.update) {
 			return this.model.direct.update(filter, update);
 		}

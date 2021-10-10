@@ -5,12 +5,13 @@ import { AppsEngineUIHost } from '@rocket.chat/apps-engine/client/AppsEngineUIHo
 import { Rooms } from '../../models/client';
 import { APIClient } from '../../utils/client';
 import { getUserAvatarURL } from '../../utils/lib/getUserAvatarURL';
+import { baseURI } from '../../../client/lib/baseURI';
 
 export class RealAppsEngineUIHost extends AppsEngineUIHost {
 	constructor() {
 		super();
 
-		this._baseURL = document.baseURI.slice(0, -1);
+		this._baseURL = baseURI.replace(/\/$/, '');
 	}
 
 	getUserAvatarUrl(username) {

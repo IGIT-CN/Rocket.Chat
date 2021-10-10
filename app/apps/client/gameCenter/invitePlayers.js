@@ -4,11 +4,14 @@ import { Template } from 'meteor/templating';
 import { ReactiveVar } from 'meteor/reactive-var';
 import { Blaze } from 'meteor/blaze';
 import { TAPi18n } from 'meteor/rocketchat:tap-i18n';
+import { Tracker } from 'meteor/tracker';
+import { Session } from 'meteor/session';
 
 import { AutoComplete } from '../../../meteor-autocomplete/client';
 import { roomTypes } from '../../../utils/client';
 import { ChatRoom } from '../../../models/client';
-import { call, modal } from '../../../ui-utils/client';
+import { modal } from '../../../ui-utils/client';
+import { callWithErrorHandling } from '../../../../client/lib/utils/callWithErrorHandling';
 
 import './invitePlayers.html';
 
@@ -52,13 +55,13 @@ Template.InvitePlayers.helpers({
 	roomModifier() {
 		return (filter, text = '') => {
 			const f = filter.get();
-			return `#${ f.length === 0 ? text : text.replace(new RegExp(filter.get()), (part) => `<strong>${ part }</strong>`) }`;
+			return `#${ f.length === 0 ? text : text.replace(new RegExp(filter.get(), 'i'), (part) => `<strong>${ part }</strong>`) }`;
 		};
 	},
 	userModifier() {
 		return (filter, text = '') => {
 			const f = filter.get();
-			return `@${ f.length === 0 ? text : text.replace(new RegExp(filter.get()), (part) => `<strong>${ part }</strong>`) }`;
+			return `@${ f.length === 0 ? text : text.replace(new RegExp(filter.get(), 'i'), (part) => `<strong>${ part }</strong>`) }`;
 		};
 	},
 	nameSuggestion() {
@@ -75,19 +78,27 @@ Template.InvitePlayers.events({
 		const privateGroupName = `${ name.replace(/\s/g, '-') }-${ Random.id(10) }`;
 
 		try {
-			const result = await call('createPrivateGroup', privateGroupName, users);
+			const result = await callWithErrorHandling('createPrivateGroup', privateGroupName, users);
 
 			roomTypes.openRouteLink(result.t, result);
 
-			// setTimeout ensures the message is only sent after the
+			// This ensures the message is only sent after the
 			// user has been redirected to the new room, preventing a
 			// weird bug that made the message appear as unsent until
 			// the screen gets refreshed
-			setTimeout(() => call('sendMessage', {
-				_id: Random.id(),
-				rid: result.rid,
-				msg: TAPi18n.__('Game_Center_Play_Game_Together', { name }),
-			}), 100);
+			Tracker.autorun((c) => {
+				if (Session.get('openedRoom') !== result.rid) {
+					return;
+				}
+
+				callWithErrorHandling('sendMessage', {
+					_id: Random.id(),
+					rid: result.rid,
+					msg: TAPi18n.__('Apps_Game_Center_Play_Game_Together', { name }),
+				});
+
+				c.stop();
+			});
 
 			modal.close();
 		} catch (err) {

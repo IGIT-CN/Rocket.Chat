@@ -1,3 +1,5 @@
+import { escapeRegExp } from '@rocket.chat/string-helpers';
+
 import { BaseRaw } from './BaseRaw';
 
 export class MessagesRaw extends BaseRaw {
@@ -44,6 +46,16 @@ export class MessagesRaw extends BaseRaw {
 
 	findDiscussionsByRoom(rid, options) {
 		const query = { rid, drid: { $exists: true } };
+
+		return this.find(query, options);
+	}
+
+	findDiscussionsByRoomAndText(rid, text, options) {
+		const query = {
+			rid,
+			drid: { $exists: true },
+			msg: new RegExp(escapeRegExp(text), 'i'),
+		};
 
 		return this.find(query, options);
 	}
@@ -105,5 +117,71 @@ export class MessagesRaw extends BaseRaw {
 			params.push({ $limit: options.count });
 		}
 		return this.col.aggregate(params, { allowDiskUse: true });
+	}
+
+	getTotalOfMessagesSentByDate({ start, end, options = {} }) {
+		const params = [
+			{ $match: { t: { $exists: false }, ts: { $gte: start, $lte: end } } },
+			{
+				$lookup: {
+					from: 'rocketchat_room',
+					localField: 'rid',
+					foreignField: '_id',
+					as: 'room',
+				},
+			},
+			{
+				$unwind: {
+					path: '$room',
+				},
+			},
+			{
+				$group: {
+					_id: {
+						_id: '$room._id',
+						name: {
+							$cond: [{ $ifNull: ['$room.fname', false] },
+								'$room.fname',
+								'$room.name'],
+						},
+						t: '$room.t',
+						usernames: {
+							$cond: [{ $ifNull: ['$room.usernames', false] },
+								'$room.usernames',
+								[]],
+						},
+						date: {
+							$concat: [
+								{ $substr: ['$ts', 0, 4] },
+								{ $substr: ['$ts', 5, 2] },
+								{ $substr: ['$ts', 8, 2] },
+							],
+						},
+					},
+					messages: { $sum: 1 },
+				},
+			},
+			{
+				$project: {
+					_id: 0,
+					date: '$_id.date',
+					room: {
+						_id: '$_id._id',
+						name: '$_id.name',
+						t: '$_id.t',
+						usernames: '$_id.usernames',
+					},
+					type: 'messages',
+					messages: 1,
+				},
+			},
+		];
+		if (options.sort) {
+			params.push({ $sort: options.sort });
+		}
+		if (options.count) {
+			params.push({ $limit: options.count });
+		}
+		return this.col.aggregate(params).toArray();
 	}
 }

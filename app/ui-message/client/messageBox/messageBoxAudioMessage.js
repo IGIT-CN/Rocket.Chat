@@ -1,90 +1,48 @@
 import { ReactiveVar } from 'meteor/reactive-var';
-import { Session } from 'meteor/session';
-import { Tracker } from 'meteor/tracker';
 import { Template } from 'meteor/templating';
 
-import { fileUploadHandler } from '../../../file-upload';
 import { settings } from '../../../settings';
-import { AudioRecorder } from '../../../ui';
-import { call } from '../../../ui-utils';
+import { AudioRecorder, fileUpload, USER_ACTIVITIES, UserAction } from '../../../ui';
 import { t } from '../../../utils';
 import './messageBoxAudioMessage.html';
 
-const startRecording = () => new Promise((resolve, reject) =>
-	AudioRecorder.start((result) => (result ? resolve() : reject())));
-
-const stopRecording = () => new Promise((resolve) => AudioRecorder.stop(resolve));
-
-const registerUploadProgress = (upload) => {
-	const uploads = Session.get('uploading') || [];
-	Session.set('uploading', [...uploads, {
-		id: upload.id,
-		name: upload.getFileName(),
-		percentage: 0,
-	}]);
-};
-
-const updateUploadProgress = (upload, { progress, error: { message: error } = {} }) => {
-	const uploads = Session.get('uploading') || [];
-	const item = uploads.find(({ id }) => id === upload.id) || {
-		id: upload.id,
-		name: upload.getFileName(),
-	};
-	item.percentage = Math.round(progress * 100) || 0;
-	item.error = error;
-	Session.set('uploading', uploads);
-};
-
-const unregisterUploadProgress = (upload) => setTimeout(() => {
-	const uploads = Session.get('uploading') || [];
-	Session.set('uploading', uploads.filter(({ id }) => id !== upload.id));
-}, 2000);
-
-const uploadRecord = async ({ rid, tmid, blob }) => {
-	const upload = fileUploadHandler('Uploads', {
-		name: `${ t('Audio record') }.mp3`,
-		size: blob.size,
-		type: 'audio/mpeg',
-		rid,
-		description: '',
-	}, blob);
-
-	upload.onProgress = (progress) => {
-		updateUploadProgress(upload, { progress });
-	};
-
-	registerUploadProgress(upload);
-
+const startRecording = async (rid, tmid) => {
 	try {
-		const [file, storage] = await new Promise((resolve, reject) => {
-			upload.start((error, ...args) => (error ? reject(error) : resolve(args)));
-		});
-
-		await call('sendFileMessage', rid, storage, file, { tmid });
-
-		unregisterUploadProgress(upload);
+		await AudioRecorder.start();
+		UserAction.performContinuously(rid, USER_ACTIVITIES.USER_RECORDING, { tmid });
 	} catch (error) {
-		updateUploadProgress(upload, { error, progress: 0 });
-		unregisterUploadProgress(upload);
+		throw error;
 	}
+};
 
-	Tracker.autorun((c) => {
-		const cancel = Session.get(`uploading-cancel-${ upload.id }`);
-
-		if (!cancel) {
-			return;
-		}
-
-		upload.stop();
-		c.stop();
-
-		updateUploadProgress(upload, { progress: 0 });
-		unregisterUploadProgress(upload);
-	});
+const stopRecording = async (rid, tmid) => {
+	const result = await new Promise((resolve) => AudioRecorder.stop(resolve));
+	UserAction.stop(rid, USER_ACTIVITIES.USER_RECORDING, { tmid });
+	return result;
 };
 
 const recordingInterval = new ReactiveVar(null);
 const recordingRoomId = new ReactiveVar(null);
+
+const clearIntervalVariables = () => {
+	if (recordingInterval.get()) {
+		clearInterval(recordingInterval.get());
+		recordingInterval.set(null);
+		recordingRoomId.set(null);
+	}
+};
+
+const cancelRecording = async (instance, rid, tmid) => {
+	clearIntervalVariables();
+
+	instance.time.set('00:00');
+
+	const blob = await stopRecording(rid, tmid);
+
+	instance.state.set(null);
+
+	return blob;
+};
 
 Template.messageBoxAudioMessage.onCreated(async function() {
 	this.state = new ReactiveVar(null);
@@ -119,12 +77,21 @@ Template.messageBoxAudioMessage.onCreated(async function() {
 	}
 });
 
+Template.messageBoxAudioMessage.onDestroyed(async function() {
+	if (this.state.get() === 'recording') {
+		const { rid, tmid } = this.data;
+		await cancelRecording(this, rid, tmid);
+	}
+});
+
 Template.messageBoxAudioMessage.helpers({
 	isAllowed() {
 		return AudioRecorder.isSupported()
 			&& !Template.instance().isMicrophoneDenied.get()
 			&& settings.get('FileUpload_Enabled')
 			&& settings.get('Message_AudioRecorderEnabled')
+			&& (!settings.get('FileUpload_MediaTypeBlackList')
+				|| !settings.get('FileUpload_MediaTypeBlackList').match(/audio\/mp3|audio\/\*/i))
 			&& (!settings.get('FileUpload_MediaTypeWhiteList')
 				|| settings.get('FileUpload_MediaTypeWhiteList').match(/audio\/mp3|audio\/\*/i));
 	},
@@ -154,8 +121,7 @@ Template.messageBoxAudioMessage.events({
 		instance.state.set('recording');
 
 		try {
-			await startRecording();
-
+			await startRecording(this.rid, this.tmid);
 			const startTime = new Date();
 			recordingInterval.set(setInterval(() => {
 				const now = new Date();
@@ -175,17 +141,7 @@ Template.messageBoxAudioMessage.events({
 	async 'click .js-audio-message-cancel'(event, instance) {
 		event.preventDefault();
 
-		if (recordingInterval.get()) {
-			clearInterval(recordingInterval.get());
-			recordingInterval.set(null);
-			recordingRoomId.set(null);
-		}
-
-		instance.time.set('00:00');
-
-		await stopRecording();
-
-		instance.state.set(null);
+		await cancelRecording(instance, this.rid, this.tmid);
 	},
 
 	async 'click .js-audio-message-done'(event, instance) {
@@ -193,19 +149,9 @@ Template.messageBoxAudioMessage.events({
 
 		instance.state.set('loading');
 
-		if (recordingInterval.get()) {
-			clearInterval(recordingInterval.get());
-			recordingInterval.set(null);
-			recordingRoomId.set(null);
-		}
-
-		instance.time.set('00:00');
-
-		const blob = await stopRecording();
-
-		instance.state.set(null);
-
 		const { rid, tmid } = this;
-		await uploadRecord({ rid, tmid, blob });
+		const blob = await cancelRecording(instance, rid, tmid);
+
+		await fileUpload([{ file: blob, type: 'video', name: `${ t('Audio record') }.mp3` }], { input: blob }, { rid, tmid });
 	},
 });

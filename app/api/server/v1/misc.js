@@ -1,51 +1,33 @@
+import crypto from 'crypto';
+
 import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { TAPi18n } from 'meteor/rocketchat:tap-i18n';
-import s from 'underscore.string';
+import { EJSON } from 'meteor/ejson';
+import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
+import { escapeHTML } from '@rocket.chat/string-helpers';
 
-import { hasRole, hasPermission } from '../../../authorization/server';
-import { Info } from '../../../utils/server';
+import { hasPermission } from '../../../authorization/server';
 import { Users } from '../../../models/server';
 import { settings } from '../../../settings/server';
 import { API } from '../api';
 import { getDefaultUserFields } from '../../../utils/server/functions/getDefaultUserFields';
 import { getURL } from '../../../utils/lib/getURL';
-import { StdOut } from '../../../logger/server/streamer';
-
-
-// DEPRECATED
-// Will be removed after v3.0.0
-API.v1.addRoute('info', { authRequired: false }, {
-	get() {
-		const warningMessage = 'The endpoint "/v1/info" is deprecated and will be removed after version v3.0.0';
-		console.warn(warningMessage);
-		const user = this.getLoggedInUser();
-
-		if (user && hasRole(user._id, 'admin')) {
-			return API.v1.success(this.deprecationWarning({
-				endpoint: 'info',
-				versionWillBeRemoved: '3.0.0',
-				response: {
-					info: Info,
-				},
-			}));
-		}
-
-		return API.v1.success(this.deprecationWarning({
-			endpoint: 'info',
-			versionWillBeRemoved: '3.0.0',
-			response: {
-				info: {
-					version: Info.version,
-				},
-			},
-		}));
-	},
-});
+import { getLogs } from '../../../../server/stream/stdout';
+import { SystemLogger } from '../../../../server/lib/logger/system';
 
 API.v1.addRoute('me', { authRequired: true }, {
 	get() {
-		return API.v1.success(this.getUserInfo(Users.findOneById(this.userId, { fields: getDefaultUserFields() })));
+		const fields = getDefaultUserFields();
+		const user = Users.findOneById(this.userId, { fields });
+
+		// The password hash shouldn't be leaked but the client may need to know if it exists.
+		if (user?.services?.password?.bcrypt) {
+			user.services.password.exists = true;
+			delete user.services.password.bcrypt;
+		}
+
+		return API.v1.success(this.getUserInfo(user));
 	},
 });
 
@@ -124,9 +106,9 @@ API.v1.addRoute('shield.svg', { authRequired: false, rateLimiterOptions: { numRe
 		const width = leftSize + rightSize;
 		const height = 20;
 
-		channel = s.escapeHTML(channel);
-		text = s.escapeHTML(text);
-		name = s.escapeHTML(name);
+		channel = escapeHTML(channel);
+		text = escapeHTML(text);
+		name = escapeHTML(name);
 
 		return {
 			headers: { 'Content-Type': 'image/svg+xml;charset=utf-8' },
@@ -179,6 +161,7 @@ API.v1.addRoute('directory', { authRequired: true }, {
 		const { sort, query } = this.parseJsonQuery();
 
 		const { text, type, workspace = 'local' } = query;
+
 		if (sort && Object.keys(sort).length > 1) {
 			return API.v1.failure('This method support only one "sort" parameter');
 		}
@@ -212,6 +195,61 @@ API.v1.addRoute('stdout.queue', { authRequired: true }, {
 		if (!hasPermission(this.userId, 'view-logs')) {
 			return API.v1.unauthorized();
 		}
-		return API.v1.success({ queue: StdOut.queue });
+		return API.v1.success({ queue: getLogs() });
 	},
 });
+
+const mountResult = ({ id, error, result }) => ({
+	message: EJSON.stringify({
+		msg: 'result',
+		id,
+		error,
+		result,
+	}),
+});
+
+const methodCall = () => ({
+	post() {
+		check(this.bodyParams, {
+			message: String,
+		});
+
+		const { method, params, id } = EJSON.parse(this.bodyParams.message);
+
+		const connectionId = this.token || crypto.createHash('md5').update(this.requestIp + this.request.headers['user-agent']).digest('hex');
+
+		const rateLimiterInput = {
+			userId: this.userId,
+			clientAddress: this.requestIp,
+			type: 'method',
+			name: method,
+			connectionId,
+		};
+
+		try {
+			DDPRateLimiter._increment(rateLimiterInput);
+			const rateLimitResult = DDPRateLimiter._check(rateLimiterInput);
+			if (!rateLimitResult.allowed) {
+				throw new Meteor.Error(
+					'too-many-requests',
+					DDPRateLimiter.getErrorMessage(rateLimitResult),
+					{ timeToReset: rateLimitResult.timeToReset },
+				);
+			}
+
+			const result = Meteor.call(method, ...params);
+			return API.v1.success(mountResult({ id, result }));
+		} catch (error) {
+			SystemLogger.error(`Exception while invoking method ${ method }`, error.message);
+			if (settings.get('Log_Level') === '2') {
+				Meteor._debug(`Exception while invoking method ${ method }`, error);
+			}
+			return API.v1.success(mountResult({ id, error }));
+		}
+	},
+});
+
+// had to create two different endpoints for authenticated and non-authenticated calls
+// because restivus does not provide 'this.userId' if 'authRequired: false'
+API.v1.addRoute('method.call/:method', { authRequired: true, rateLimiterOptions: false }, methodCall());
+API.v1.addRoute('method.callAnon/:method', { authRequired: false, rateLimiterOptions: false }, methodCall());

@@ -4,6 +4,7 @@ import { Random } from 'meteor/random';
 import { ReadReceipts, Subscriptions, Messages, Rooms, Users, LivechatVisitors } from '../../../../app/models';
 import { settings } from '../../../../app/settings';
 import { roomTypes } from '../../../../app/utils';
+import { SystemLogger } from '../../../../server/lib/logger/system';
 
 const rawReadReceipts = ReadReceipts.model.rawCollection();
 
@@ -67,7 +68,7 @@ export const ReadReceipt = {
 		this.storeReadReceipts([{ _id: message._id }], roomId, userId, extraData);
 	},
 
-	storeReadReceipts(messages, roomId, userId, extraData = {}) {
+	async storeReadReceipts(messages, roomId, userId, extraData = {}) {
 		if (settings.get('Message_Read_Receipt_Store_Users')) {
 			const ts = new Date();
 			const receipts = messages.map((message) => ({
@@ -84,9 +85,9 @@ export const ReadReceipt = {
 			}
 
 			try {
-				rawReadReceipts.insertMany(receipts);
+				await rawReadReceipts.insertMany(receipts);
 			} catch (e) {
-				console.error('Error inserting read receipts per user');
+				SystemLogger.error('Error inserting read receipts per user');
 			}
 		}
 	},

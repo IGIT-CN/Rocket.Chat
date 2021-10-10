@@ -2,7 +2,7 @@ import crypto from 'crypto';
 
 import { Random } from 'meteor/random';
 
-import { API } from '../../../../api';
+import { API } from '../../../../api/server';
 import { LivechatRooms, LivechatVisitors } from '../../../../models';
 import { settings } from '../../../../settings';
 import { Livechat } from '../../../server/lib/Livechat';
@@ -90,7 +90,7 @@ API.v1.addRoute('livechat/facebook', {
 				message: Livechat.sendMessage(sendMessage),
 			};
 		} catch (e) {
-			console.error('Error using Facebook ->', e);
+			Livechat.logger.error('Error using Facebook ->', e);
 		}
 	},
 });

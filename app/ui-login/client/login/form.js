@@ -10,7 +10,8 @@ import toastr from 'toastr';
 
 import { settings } from '../../../settings';
 import { callbacks } from '../../../callbacks';
-import { t, handleError } from '../../../utils';
+import { t } from '../../../utils';
+import { handleError } from '../../../../client/lib/utils/handleError';
 
 Template.loginForm.helpers({
 	userName() {
@@ -71,6 +72,9 @@ Template.loginForm.helpers({
 	},
 	manuallyApproveNewUsers() {
 		return settings.get('Accounts_ManuallyApproveNewUsers');
+	},
+	typedEmail() {
+		return s.trim(Template.instance().typedEmail);
 	},
 });
 
@@ -137,16 +141,27 @@ Template.loginForm.events({
 			return Meteor[loginMethod](s.trim(formData.emailOrUsername), formData.pass, function(error) {
 				instance.loading.set(false);
 				if (error != null) {
-					if (error.error === 'no-valid-email') {
-						instance.state.set('email-verification');
-					} else if (error.error === 'error-user-is-not-activated') {
-						toastr.error(t('Wait_activation_warning'));
-					} else if (error.error === 'error-app-user-is-not-allowed-to-login') {
-						toastr.error(t('App_user_not_allowed_to_login'));
-					} else {
-						toastr.error(t('User_not_found_or_incorrect_password'));
+					switch (error.error) {
+						case 'error-user-is-not-activated':
+							return toastr.error(t('Wait_activation_warning'));
+						case 'error-invalid-email':
+							instance.typedEmail = formData.emailOrUsername;
+							return instance.state.set('email-verification');
+						case 'error-app-user-is-not-allowed-to-login':
+							toastr.error(t('App_user_not_allowed_to_login'));
+							break;
+						case 'error-login-blocked-for-ip':
+							toastr.error(t('Error_login_blocked_for_ip'));
+							break;
+						case 'error-login-blocked-for-user':
+							toastr.error(t('Error_login_blocked_for_user'));
+							break;
+						case 'error-license-user-limit-reached':
+							toastr.error(t('error-license-user-limit-reached'));
+							break;
+						default:
+							return toastr.error(t('User_not_found_or_incorrect_password'));
 					}
-					return;
 				}
 				Session.set('forceLogin', false);
 			});
@@ -168,54 +183,22 @@ Template.loginForm.events({
 
 Template.loginForm.onCreated(function() {
 	const instance = this;
-	this.customFields = new ReactiveVar();
 	this.loading = new ReactiveVar(false);
-	Tracker.autorun(() => {
-		const Accounts_CustomFields = settings.get('Accounts_CustomFields');
-		if (typeof Accounts_CustomFields === 'string' && Accounts_CustomFields.trim() !== '') {
-			try {
-				return this.customFields.set(JSON.parse(settings.get('Accounts_CustomFields')));
-			} catch (error1) {
-				return console.error('Invalid JSON for Accounts_CustomFields');
-			}
-		} else {
-			return this.customFields.set(null);
-		}
-	});
+
 	if (Session.get('loginDefaultState')) {
 		this.state = new ReactiveVar(Session.get('loginDefaultState'));
 	} else {
 		this.state = new ReactiveVar('login');
 	}
-	this.validSecretURL = new ReactiveVar(false);
-	const validateCustomFields = function(formObj, validationObj) {
-		const customFields = instance.customFields.get();
-		if (!customFields) {
-			return;
-		}
 
-		for (const field in formObj) {
-			if (formObj.hasOwnProperty(field)) {
-				const value = formObj[field];
-				if (customFields[field] == null) {
-					continue;
-				}
-				const customField = customFields[field];
-				if (customField.required === true && !value) {
-					validationObj[field] = t('Field_required');
-					return validationObj[field];
-				}
-				if ((customField.maxLength != null) && value.length > customField.maxLength) {
-					validationObj[field] = t('Max_length_is', customField.maxLength);
-					return validationObj[field];
-				}
-				if ((customField.minLength != null) && value.length < customField.minLength) {
-					validationObj[field] = t('Min_length_is', customField.minLength);
-					return validationObj[field];
-				}
-			}
+	Tracker.autorun(() => {
+		const registrationForm = settings.get('Accounts_RegistrationForm');
+		if (registrationForm === 'Disabled' && this.state.get() === 'register') {
+			this.state.set('login');
 		}
-	};
+	});
+
+	this.validSecretURL = new ReactiveVar(false);
 	this.validate = function() {
 		const formData = $('#login-card').serializeArray();
 		const formObj = {};
@@ -234,7 +217,7 @@ Template.loginForm.onCreated(function() {
 				validationObj.emailOrUsername = t('Invalid_email');
 			}
 		}
-		if (state !== 'forgot-password') {
+		if (state !== 'forgot-password' && state !== 'email-verification') {
 			if (!formObj.pass) {
 				validationObj.pass = t('Invalid_pass');
 			}
@@ -249,7 +232,6 @@ Template.loginForm.onCreated(function() {
 			if (settings.get('Accounts_ManuallyApproveNewUsers') && !formObj.reason) {
 				validationObj.reason = t('Invalid_reason');
 			}
-			validateCustomFields(formObj, validationObj);
 		}
 		$('#login-card h2').removeClass('error');
 		$('#login-card input.error, #login-card select.error').removeClass('error');
